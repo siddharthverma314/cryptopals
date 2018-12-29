@@ -1,115 +1,114 @@
-fn hex_to_num(hexchar: char) -> u8 {
-    if hexchar >= '0' && hexchar <= '9' {
-        return hexchar as u8 - '0' as u8;
-    } else if 'a' <= hexchar && hexchar <= 'f' {
-        return hexchar as u8 - 'a' as u8 + 10;
-    } else if 'A' <= hexchar && hexchar <= 'F' {
-        return hexchar as u8 - 'A' as u8 + 10;
-    } else{
-        panic!("Invalid char, {}", hexchar);
-    }
+pub struct ConvertCfg<'a> {
+    convert: &'a str,
+    size: usize
 }
 
-fn hex_to_byte(hex: &str) -> u8 {
-    assert_eq!(hex.len(), 2);
-    hex.chars()
-        .map(hex_to_num)
-        .fold(0, |x, y| (x << 4) + y)
-}
+pub const HEX_CONFIG: ConvertCfg<'static> = ConvertCfg{
+    convert: "0123456789abcdef",
+    size: 4
+};
 
-fn byte_to_hex(byte: u8) -> String {
-    let hexstr :Vec<char> = "0123456789abcdef".chars().collect();
-    let c1 = (byte >> 4) as usize;
-    let c2 = (byte & 15) as usize;
-    let mut out = String::new();
-    out.push(hexstr[c1]);
-    out.push(hexstr[c2]);
-    out
-}
+pub const BASE64_CONFIG: ConvertCfg<'static> = ConvertCfg{
+    convert: "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/",
+    size: 6
+};
 
-pub fn hex_to_bytes(hexstr: &str) -> Vec<u8> {
-    hexstr.chars()
-        .collect::<Vec<char>>()
-        .chunks(2)
-        .map(|a| a.iter().collect::<String>())
-        .map(|a| hex_to_byte(a.as_str()))
+pub const BYTES_CONFIG: ConvertCfg<'static> = ConvertCfg{
+    convert: "",
+    size: 8
+};
+
+pub fn convert_string_base(s: String, cfg: &ConvertCfg) -> Vec<u8>{
+    s.chars()
+        .map(|x| cfg.convert.find(x).unwrap() as u8)
         .collect::<Vec<u8>>()
 }
 
-pub fn bytes_to_hex(bytes: &[u8]) -> String {
-    bytes.iter()
-        .map(|x| byte_to_hex(*x))
+pub fn convert_base_bits(base: Vec<u8>, cfg: &ConvertCfg) -> Vec<u8>{
+    base.into_iter()
+        .flat_map(|x| {
+            let mut res = Vec::new();
+            let mut x = x;
+            for _ in 0..cfg.size {
+                res.push(x & 1);
+                x = x >> 1;
+            }
+            res.reverse();
+            res.into_iter()
+        })
+        .collect()
+}
+
+pub fn convert_bits(x: String, cfg: &ConvertCfg) -> Vec<u8>{
+    convert_base_bits(convert_string_base(x, cfg), cfg)
+}
+
+pub fn convert_bits_base(mut bits: Vec<u8>, cfg: &ConvertCfg) -> Vec<u8> {
+    let extra = bits.len() % cfg.size;
+    if extra != 0 {
+        let padding = cfg.size - extra;
+        for _ in 0..padding {
+            bits.push(0)
+        };
+    }
+
+    bits.chunks(cfg.size)
+        .map(|item| item.iter().fold(0, |acc, elem| {(acc << 1) + elem}))
+        .collect::<Vec<u8>>()
+}
+
+pub fn convert_base_string(bits: Vec<u8>, cfg: &ConvertCfg) -> String{
+    bits.into_iter()
+        .map(|item| cfg.convert.chars().nth(item as usize).unwrap())
         .collect::<String>()
 }
 
-// FIXME
-pub fn bytes_to_string(bytes: &[u8]) -> String {
-    let b64str = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/"
-        .chars()
-        .collect::<Vec<char>>();
-    bytes.iter()
-        .map(|x| b64str[*x as usize])
-        .collect::<String>()
+pub fn convert_string(bits: Vec<u8>, cfg: &ConvertCfg) -> String {
+    convert_base_string(convert_bits_base(bits, cfg), cfg)
+}
+
+pub fn hex_decode(hexstr: String) -> Vec<u8> {
+    let bits = convert_bits(hexstr, &HEX_CONFIG);
+    convert_bits_base(bits, &BYTES_CONFIG)
+}
+
+pub fn hex_encode(bytes: Vec<u8>) -> String {
+    let bits = convert_base_bits(bytes, &BYTES_CONFIG);
+    convert_string(bits, &HEX_CONFIG)
 }
 
 #[cfg(test)]
-mod tests {
-    use convert;
+mod test {
+    use super::*;
 
     #[test]
-    fn hex_to_num_test() {
-        let s = "0123456789abcdef";
-        for (i, c) in s.as_bytes().iter().enumerate() {
-            assert_eq!(convert::hex_to_num(*c as char), i as u8);
-        }
-        let s = "0123456789ABCDEF";
-        for (i, c) in s.as_bytes().iter().enumerate() {
-            assert_eq!(convert::hex_to_num(*c as char), i as u8);
-        }
+    fn simple_hex_test() {
+        let b = convert_bits("a".to_string(), &HEX_CONFIG);
+        assert_eq!(b, vec![1, 0, 1, 0]);
+        let b = convert_bits("ab1".to_string(), &HEX_CONFIG);
+        assert_eq!(b, vec![1, 0, 1, 0, 1, 0, 1, 1, 0, 0, 0, 1]);
     }
 
     #[test]
-    #[should_panic]
-    fn hex_to_num_panic_test() {
-        convert::hex_to_num('g');
+    fn simple_double_hex_test() {
+        let bits = convert_bits("ab1".to_string(), &HEX_CONFIG);
+        let s = convert_string(bits, &HEX_CONFIG);
+        assert_eq!(s, "ab1");
     }
 
     #[test]
-    fn hex_to_byte_test() {
-        let hexchars = "0123456789abcdef";
-        for (i, c1) in hexchars.as_bytes().iter().enumerate() {
-            for (j, c2) in hexchars.as_bytes().iter().enumerate() {
-                let num = (i * 16 + j) as u8;
-                let mut hexstr = String::new();
-                hexstr.push(*c1 as char);
-                hexstr.push(*c2 as char);
-                println!("{}, {}", num, hexstr);
-                assert_eq!(convert::hex_to_byte(hexstr.as_str()), num)
-            }
-        }
+    fn random_double_hex_test() {
+        let b = convert_bits("ab1".to_string(), &HEX_CONFIG);
+        let b = convert_string(b, &HEX_CONFIG);
+        assert_eq!(b.to_string(), "ab1");
     }
 
     #[test]
-    fn byte_to_hex_test() {
-        let hexchars = "0123456789abcdef";
-        for c1 in hexchars.as_bytes().iter() {
-            for c2 in hexchars.as_bytes().iter() {
-                let mut hexstr = String::new();
-                hexstr.push(*c1 as char);
-                hexstr.push(*c2 as char);
-                let outstr = convert::hex_to_byte(hexstr.as_str());
-                let outstr = convert::byte_to_hex(outstr);
-                assert_eq!(outstr, hexstr);
-            }
-        }
-    }
-
-    #[test]
-    fn test_final() {
+    fn given_test() {
         let hexstr = "49276d206b696c6c696e6720796f757220627261696e206c696b65206120706f69736f6e6f7573206d757368726f6f6d";
         let base64str = "SSdtIGtpbGxpbmcgeW91ciBicmFpbiBsaWtlIGEgcG9pc29ub3VzIG11c2hyb29t";
-        let out = convert::hex_to_bytes(hexstr);
-        let out = convert::bytes_to_string(out.as_slice());
-        assert_eq!(out, base64str);
+        let b = convert_bits(hexstr.to_string(), &HEX_CONFIG);
+        let cbase64 = convert_string(b, &BASE64_CONFIG);
+        assert_eq!(cbase64, base64str);
     }
 }

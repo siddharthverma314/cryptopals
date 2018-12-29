@@ -3,4 +3,6 @@ name = "cryptopal"
 version = "0.1.0"
 authors = ["Siddharth Verma <siddharthverma314@gmail.com>"]
 
-[dependencies]
+[lib]
+name = "cryptolib"
+path = "src/lib.rs"
