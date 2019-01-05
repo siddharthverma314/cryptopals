@@ -1,6 +1,9 @@
 use std::collections::HashMap;
 use std::f64;
+use std::u32;
 use rayon::prelude::*;
+use nmin;
+use convert::Buf;
 
 const ENG_FREQ:[(char, f64); 26] = [
     ('E', 0.120_195_498_702_709_22),
@@ -31,15 +34,15 @@ const ENG_FREQ:[(char, f64); 26] = [
     ('Z', 0.000_702_127_776_284_537_3)
 ];
 
-pub fn xor_fixed(buffer1: &Vec<u8>, buffer2: &Vec<u8>) -> Vec<u8> {
+pub fn xor_fixed(buffer1: &[u8], buffer2: &[u8]) -> Vec<u8> {
     buffer1.par_iter().zip(buffer2).map(|(a, b)| a ^ b).collect()
 }
 
-pub fn xor_byte(buffer1: &Vec<u8>, byte: u8) -> Vec<u8> {
+pub fn xor_byte(buffer1: &[u8], byte: u8) -> Vec<u8> {
     buffer1.par_iter().map(|x| *x ^ byte).collect()
 }
 
-pub fn eng_similarity(buffer: &Vec<u8>) -> f64 {
+pub fn eng_similarity(buffer: &[u8]) -> f64 {
     let mut count: HashMap<u8, u32> = HashMap::new();
 
     // keep track of all A-Z
@@ -74,17 +77,14 @@ pub fn eng_similarity(buffer: &Vec<u8>) -> f64 {
 
 
         let diff = qi * (qi / pi).ln();
-        // println!("c: {}, \t pi: {:.5}, \t qi: {:.5}, \t diff: {:.5}", c, pi, qi, diff);
         score += diff
     }
-
-    // println!("score: {:.10}", score);
 
     let frac = total_count / (buffer.len() as f64);
     score / frac
 }
 
-pub fn decrypt_xor_byte(buffer1: &Vec<u8>) -> (u8, Vec<u8>) {
+pub fn decrypt_xor_byte(buffer1: &[u8]) -> (u8, Vec<u8>) {
     let ans = (0u8..255u8).into_par_iter()
         .map(|x| (x, xor_byte(buffer1, x)))
         .map(|(x, b)| (x, eng_similarity(&b), b))
@@ -99,7 +99,7 @@ pub fn decrypt_xor_byte(buffer1: &Vec<u8>) -> (u8, Vec<u8>) {
     (ans.0, ans.2)
 }
 
-pub fn xor_repeated(buffer1: &Vec<u8>, key: &Vec<u8>) -> Vec<u8> {
+pub fn xor_repeated(buffer1: &[u8], key: &[u8]) -> Vec<u8> {
     buffer1.iter()
         .zip(key.iter().cycle())
         .map(|(a, b)| *a ^ *b)
@@ -107,7 +107,7 @@ pub fn xor_repeated(buffer1: &Vec<u8>, key: &Vec<u8>) -> Vec<u8> {
 }
 
 // Decrypt XOR repeated
-fn hamming_distance(buf1: &Vec<u8>, buf2: &Vec<u8>) -> u32 {
+fn hamming_distance(buf1: &[u8], buf2: &[u8]) -> u32 {
     buf1.iter()
         .zip(buf2.iter())
         .map(|(x, y)| *x ^ *y)
@@ -122,28 +122,83 @@ fn hamming_distance(buf1: &Vec<u8>, buf2: &Vec<u8>) -> u32 {
         .sum()
 }
 
-static MAX_EDIT_LEN: u32 = 40;
-static NUM_KEYSIZE u32 = 4;
 
-fn find_keysize(buf: &Vec<u8>, num_keys: u32) -> Vec<u32> {
-    (2..MAX_EDIT_LEN.max(buf.len() as u32 / 2)).into_par_iter()
-        .map(|x| (x, hamming_distance(buf1[0..x], buf1[x..2*x])))
-        .collect::<Vec<u32>>()
-        .sort()[0..NUM_KEYSIZE]
+static MAX_EDIT_LEN: usize = 40;
+static MAX_NUM_KEYS: usize = 4;
+
+fn find_keysize(buf: &[u8]) -> Vec<usize> {
+    let mut nmin: nmin::NMin<(f32, usize)> = nmin::NMin::new(MAX_NUM_KEYS);
+
+    for i in 2..MAX_EDIT_LEN.min(buf.len() / 2) {
+        let hd = hamming_distance(&buf[0..i], &buf[i..2*i]);
+        let hd = hd as f32 / i as f32;
+        nmin.update((hd, i));
+    }
+
+    nmin.get_items().iter().map(|x| x.1).collect()
+}
+
+fn weave_blocks(buf: Vec<u8>, num: usize) -> Vec<Vec<u8>> {
+    let mut count = 0;
+    let mut bitcount = 0;
+
+    let mut out: Vec<Vec<u8>> = Vec::with_capacity(num);
+    for _ in 0..num {
+        out.push(vec![0])
+    }
+
+    for bit in Buf::from_bytes(buf).bits().iter() {
+        if count >= num {
+            count = 0;
+            bitcount += 1;
+        }
+        
+        if bitcount >= 8 {
+            count = 0;
+            for vec in &mut out {
+                vec.push(0);
+            }
+        }
+
+        let byte = out.get_mut(count).unwrap().last_mut().unwrap();
+
+        // add bit
+        *byte += bit << (7 - bitcount);
+
+        count += 1;
+    }
+
+    out
+}
+
+fn unweave_blocks(blocks: Vec<Vec<u8>>) -> Vec<u8> {
+    let mut count = 0;
+    let mut bytes = Vec::new();
+
+    let bitcount = (0..8).rev().cycle();
+
+    for j in 0..blocks.get(0).unwrap().len() {
+
+
+        for i in 0..blocks.len() {
+            bytes.push(*(blocks.get(i).unwrap().get(j).unwrap()));
+        }
+    }
+    
+    bytes
 }
 
 #[cfg(test)]
 mod test {
     use super::*;
-    use convert::*;
+    use rand;
 
     #[test]
     fn test_xor_fixed() {
-        let buffer1: Vec<u8> = hex_decode("1c0111001f010100061a024b53535009181c").collect();
-        let buffer2: Vec<u8> = hex_decode("686974207468652062756c6c277320657965").collect();
-        let out = xor_fixed(&buffer1, &buffer2);
-        let out = hex_encode(Box::new(out.into_iter()));
-        assert_eq!(out, "746865206b696420646f6e277420706c6179");
+        let buf1 = Buf::from_hex("1c0111001f010100061a024b53535009181c").bytes().to_vec();
+        let buf2 = Buf::from_hex("686974207468652062756c6c277320657965").bytes().to_vec();
+        let out = Buf::from_bytes(xor_fixed(&buf1, &buf2));
+        assert_eq!(out.to_hex(), "746865206b696420646f6e277420706c6179");
     }
 
     #[test]
@@ -152,7 +207,7 @@ mod test {
         let buffer1 = str1.bytes().collect::<Vec<u8>>();
         let buffer2 = "ICE".bytes().collect::<Vec<u8>>();
         let out = xor_repeated(&buffer1, &buffer2);
-        let out = hex_encode(Box::new(out.into_iter()));
+        let out = Buf::from_bytes(out).to_hex();
         assert_eq!(out, "0b3637272a2b2e63622c2e69692a23693a2a3c6324202d623d63343c2a26226324272765272a282b2f20430a652e2c652a3124333a653e2b2027630c692b20283165286326302e27282f");
     }
 
@@ -161,5 +216,40 @@ mod test {
         let buf1: Vec<u8> = "this is a test".bytes().collect();
         let buf2: Vec<u8> = "wokka wokka!!!".bytes().collect();
         assert_eq!(hamming_distance(&buf1, &buf2), 37);
+    }
+
+    #[test]
+    fn test_intersperse() {
+        let buf = vec![0b10101010u8, 0b10101010u8];
+        let out = weave_blocks(buf, 2);
+        assert_eq!(out, vec![vec![255], vec![0]]);
+    }
+
+    #[test]
+    fn test_intersperse_2() {
+        let buf = vec![0b10101010u8, 0b10101010u8];
+        let out = weave_blocks(buf, 3);
+        assert_eq!(out, vec![vec![0b10101000], vec![0b01010000], vec![0b10101000]]);
+    }
+
+    #[test]
+    fn test_intersperse_random() {
+        const BUF_LEN: usize = 1000;
+        const NUM_ITER: usize = 100;
+
+        for _ in 0..NUM_ITER {
+            let mut buf: Vec<u8> = Vec::with_capacity(BUF_LEN);
+            let blocks: u8 = rand::random();
+
+            for _ in 0..BUF_LEN {
+                buf.push(rand::random());
+            }
+
+            let prev = buf.clone();
+            
+            let out = weave_blocks(buf, blocks as usize);
+            let out = unweave_blocks(out);
+            assert_eq!(out, prev);
+        }
     }
 }
