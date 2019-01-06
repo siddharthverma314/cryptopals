@@ -3,7 +3,6 @@ use std::f64;
 use std::u32;
 use rayon::prelude::*;
 use nmin;
-use convert::Buf;
 
 const ENG_FREQ:[(char, f64); 26] = [
     ('E', 0.120_195_498_702_709_22),
@@ -88,14 +87,8 @@ pub fn decrypt_xor_byte(buffer1: &[u8]) -> (u8, Vec<u8>) {
     let ans = (0u8..255u8).into_par_iter()
         .map(|x| (x, xor_byte(buffer1, x)))
         .map(|(x, b)| (x, eng_similarity(&b), b))
-        .reduce(|| (0, f64::INFINITY, vec!{0}),
-                |(x, v, b), (nx, nv, nb)| {
-                    if nv < v {
-                        (nx, nv, nb)
-                    } else {
-                        (x, v, b)
-                    }
-                });
+        .min_by(|x, y| x.1.partial_cmp(&y.1).unwrap()).unwrap();
+
     (ans.0, ans.2)
 }
 
@@ -108,8 +101,8 @@ pub fn xor_repeated(buffer1: &[u8], key: &[u8]) -> Vec<u8> {
 
 // Decrypt XOR repeated
 fn hamming_distance(buf1: &[u8], buf2: &[u8]) -> u32 {
-    buf1.iter()
-        .zip(buf2.iter())
+    buf1.par_iter()
+        .zip(buf2.par_iter())
         .map(|(x, y)| *x ^ *y)
         .map(|mut x| {
             let mut count = 0u32;
@@ -124,7 +117,7 @@ fn hamming_distance(buf1: &[u8], buf2: &[u8]) -> u32 {
 
 
 static MAX_EDIT_LEN: usize = 40;
-static MAX_NUM_KEYS: usize = 4;
+static MAX_NUM_KEYS: usize = 20;
 
 fn find_keysize(buf: &[u8]) -> Vec<usize> {
     let mut nmin: nmin::NMin<(f32, usize)> = nmin::NMin::new(MAX_NUM_KEYS);
@@ -135,63 +128,73 @@ fn find_keysize(buf: &[u8]) -> Vec<usize> {
         nmin.update((hd, i));
     }
 
-    nmin.get_items().iter().map(|x| x.1).collect()
+    let out: Vec<usize> = nmin.get_items().par_iter().map(|x| x.1).collect();
+    out
 }
 
-fn weave_blocks(buf: Vec<u8>, num: usize) -> Vec<Vec<u8>> {
-    let mut count = 0;
-    let mut bitcount = 0;
+fn weave_blocks(buf: &[u8], num: usize) -> Vec<Vec<u8>> {
+    assert!(num != 0);
 
     let mut out: Vec<Vec<u8>> = Vec::with_capacity(num);
+
     for _ in 0..num {
-        out.push(vec![0])
+        out.push(Vec::new());
     }
 
-    for bit in Buf::from_bytes(buf).bits().iter() {
-        if count >= num {
-            count = 0;
-            bitcount += 1;
-        }
-        
-        if bitcount >= 8 {
-            count = 0;
-            for vec in &mut out {
-                vec.push(0);
-            }
-        }
-
-        let byte = out.get_mut(count).unwrap().last_mut().unwrap();
-
-        // add bit
-        *byte += bit << (7 - bitcount);
-
-        count += 1;
-    }
+    buf.iter()
+        .zip((0..num).into_iter().cycle())
+        .for_each(|(byte, index)| out.get_mut(index).unwrap().push(*byte));
 
     out
 }
 
 fn unweave_blocks(blocks: Vec<Vec<u8>>) -> Vec<u8> {
-    let mut count = 0;
-    let mut bytes = Vec::new();
-
-    let bitcount = (0..8).rev().cycle();
+    let mut bytes: Vec<u8> = Vec::new();
 
     for j in 0..blocks.get(0).unwrap().len() {
-
-
         for i in 0..blocks.len() {
-            bytes.push(*(blocks.get(i).unwrap().get(j).unwrap()));
+            bytes.push(*blocks.get(i).unwrap().get(j).unwrap_or(&0));
         }
     }
-    
+
     bytes
+}
+
+pub fn decrypt_xor_repeated(buf: &[u8]) -> (String, String) {
+    let keylens = find_keysize(buf);
+
+    let result = keylens.into_par_iter()
+        .map(|len| weave_blocks(buf, len))
+        .map(|b| {
+            let mut blocks: Vec<Vec<u8>> = Vec::new();
+            let mut key = String::new();
+
+            for block in b {
+                let decrypt = decrypt_xor_byte(&block);
+                blocks.push(decrypt.1);
+                key.push(decrypt.0 as char);
+            }
+
+            let blocks = unweave_blocks(blocks);
+            let mut out = String::new();
+            let similarity = eng_similarity(&blocks);
+
+            for block in blocks {
+                out.push(block as char);
+            }
+
+            (similarity, key, out)
+        })
+        .min_by(|x, y| x.0.partial_cmp(&y.0).unwrap()).unwrap();
+
+    (result.1, result.2)
 }
 
 #[cfg(test)]
 mod test {
     use super::*;
     use rand;
+    use convert::Buf;
 
     #[test]
     fn test_xor_fixed() {
@@ -218,28 +221,38 @@ mod test {
         assert_eq!(hamming_distance(&buf1, &buf2), 37);
     }
 
-    #[test]
-    fn test_intersperse() {
-        let buf = vec![0b10101010u8, 0b10101010u8];
-        let out = weave_blocks(buf, 2);
-        assert_eq!(out, vec![vec![255], vec![0]]);
+    fn remove_zeros(mut buf: Vec<u8>) -> Vec<u8> {
+        while buf.last().unwrap() == &0 {
+            buf.pop();
+        }
+        buf
     }
 
     #[test]
-    fn test_intersperse_2() {
-        let buf = vec![0b10101010u8, 0b10101010u8];
-        let out = weave_blocks(buf, 3);
-        assert_eq!(out, vec![vec![0b10101000], vec![0b01010000], vec![0b10101000]]);
+    fn test_weave_1() {
+        let buf: Vec<u8> = vec![1, 2, 3, 4, 5, 6];
+        let weaved = weave_blocks(&buf, 2);
+        assert_eq!(weaved, vec![vec![1, 3, 5], vec![2, 4, 6]]);
+        assert_eq!(unweave_blocks(weaved), buf);
     }
 
     #[test]
-    fn test_intersperse_random() {
+    fn test_weave_2() {
+        let buf: Vec<u8> = vec![1, 2, 3, 4, 5, 6];
+        let weaved = weave_blocks(&buf, 3);
+        assert_eq!(weaved, vec![vec![1, 4], vec![2, 5], vec![3, 6]]);
+        assert_eq!(unweave_blocks(weaved), buf);
+    }
+
+    #[test]
+    fn test_weave_random() {
         const BUF_LEN: usize = 1000;
         const NUM_ITER: usize = 100;
 
         for _ in 0..NUM_ITER {
             let mut buf: Vec<u8> = Vec::with_capacity(BUF_LEN);
             let blocks: u8 = rand::random();
+            let blocks = blocks as usize + 1;
 
             for _ in 0..BUF_LEN {
                 buf.push(rand::random());
@@ -247,8 +260,12 @@ mod test {
 
             let prev = buf.clone();
             
-            let out = weave_blocks(buf, blocks as usize);
+            let out = weave_blocks(&buf, blocks);
             let out = unweave_blocks(out);
+            
+            let out = remove_zeros(out);
+            let prev = remove_zeros(prev);
+
             assert_eq!(out, prev);
         }
     }

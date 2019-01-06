@@ -111,7 +111,7 @@ impl<'a> Buf<'a>{
 #[cfg(test)]
 mod test {
     use super::*;
-    use rand::{thread_rng, Rng};
+    use rand::thread_rng;
     use rand::prelude::*;
 
     #[test]
