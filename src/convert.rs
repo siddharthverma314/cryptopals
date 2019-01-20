@@ -31,8 +31,8 @@ impl<'a> Iterator for Chunker<'a> {
 //    BUFFER    //
 //////////////////
 
-pub const HEX_STR: &str = "0123456789abcdef";
-pub const BASE64_STR: &str = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+const HEX_STR: &str = "0123456789abcdef";
+const BASE64_STR: &str = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
 
 pub struct Buf<'a>{
     buf: Box<Iterator<Item=u8> + 'a>,
@@ -40,13 +40,19 @@ pub struct Buf<'a>{
 }
 
 impl<'a> Buf<'a>{
-    pub fn from_string(s: &'a str, convert: &'a str, base: usize) -> Buf<'a> {
-        let buf = Box::new(s.chars().map(move |x| convert.find(x).unwrap() as u8));
+    pub fn from_string<F>(s: &'a str, convert: &'a str, base: usize, preprocess: F) -> Buf<'a>
+    where F: Fn(char) -> char + 'a
+    {
+        let buf = Box::new(
+            s.chars().
+                map(move |x| preprocess(x)).
+                map(move |x| convert.find(x).unwrap() as u8)
+        );
         Buf{ buf: buf, base: base }
     }
 
     pub fn from_hex(hexstr: &'a str) -> Buf<'a> {
-        Buf::from_string(hexstr, HEX_STR, 4)
+        Buf::from_string(hexstr, HEX_STR, 4, |x: char| x.to_lowercase().next().unwrap())
     }
 
     pub fn from_bytes(bytes: Vec<u8>) -> Buf<'a> {
@@ -54,7 +60,7 @@ impl<'a> Buf<'a>{
     }
 
     pub fn from_base64(base64str: &'a str) -> Buf<'a> {
-        Buf::from_string(base64str, BASE64_STR, 6)
+        Buf::from_string(base64str, BASE64_STR, 6, |x| if x == '=' {'A'} else {x})
     }
 
     pub fn bits(self) -> Buf<'a> {
