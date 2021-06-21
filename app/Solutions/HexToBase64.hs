@@ -1,4 +1,4 @@
-module HexToBase64 where
+module Solutions.HexToBase64 where
 
 import Cryptopals.Convert
 import Data.Maybe (fromJust)

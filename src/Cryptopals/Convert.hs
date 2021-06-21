@@ -1,13 +1,7 @@
 {-# LANGUAGE DuplicateRecordFields #-}
 {-# LANGUAGE RecordWildCards #-}
 
-module Cryptopals.Convert
-  ( encHex,
-    decHex,
-    encBase64,
-    decBase64,
-  )
-where
+module Cryptopals.Convert where
 
 import Data.Bits (shiftR, (.&.))
 import Data.List (elemIndex)
