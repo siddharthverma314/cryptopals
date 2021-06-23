@@ -17,6 +17,7 @@
             ];
             packages = ps: with ps; [
               vector
+              req
             ];
           };
         }
